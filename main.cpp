@@ -25,7 +25,7 @@ vector<Face> faces;
 vector<Edge> contours;
 vector<vector<uint>> neighboors;
 vector<float> angles;
-uint ring_vert;
+uint ring_vert = 987654321;
 float cross_size;
 size_t nV;
 float x_0=1e10, x_1=-1e10;
@@ -72,7 +72,7 @@ void computeNeigbhboorsAndContours() {
 			uint a = f[i], b = f[(i+1)%n];
 			if(a > b) swap(a, b);
 			size_t nn = neighboors[a].size();
-			uint j = 0;
+			uint j = lim[a];
 			while(j < nn && neighboors[a][j] != b) j ++;
 			if(j == nn) neighboors[a].push_back(b);
 			else swap(neighboors[a][j], neighboors[a][lim[a]++]);
@@ -97,12 +97,49 @@ void rand_angles() {
 	for(Edge &e : contours) {
 		uint a = e.first, b = e.second;
 		Vertex v = vertices[b] - vertices[a];
-		angles[a] += 0.5*atan2(v.y, v.x);
-		angles[b] += 0.5*atan2(v.y, v.x);
+		float add = 0.5*atan2(v.y, v.x);
+		angles[a] += add, angles[b] += add;
 		cross_size += v.norm();
 	}
 	cross_size *= 0.33/contours.size();
 }
+
+void smooth_cross_field(uint n_steps) {
+	// Initialize
+	angles = vector<float>(nV);
+	vector<bool> is_edge(nV, false);
+	for(uint i = 0; i < nV; i++) angles[i] = 0;
+	for(Edge &e : contours) {
+		uint a = e.first, b = e.second;
+		is_edge[a] = is_edge[b] = true;
+		Vertex v = vertices[b] - vertices[a];
+		float add = 0.5*atan2(v.y, v.x);
+		angles[a] += add, angles[b] += add;
+		cross_size += v.norm();
+	}
+	cross_size *= 0.33/contours.size();
+
+	// Upddate
+	vector<float> tmp(nV);
+	for(uint step = 0; step < n_steps; step++) {
+		for(uint a = 0; a < nV; a++) {
+			if(is_edge[a]) tmp[a] = is_edge[a];
+			else {
+				float co = 0, si = 0;
+				for(uint b : neighboors[a])
+					co += cos(4*angles[b]), si += sin(4*angles[b]);
+				tmp[a] = atan2(si, co) / 4;
+			}
+		}
+		swap(angles, tmp);
+	}
+}
+
+void drawEdge(uint a, uint b) {
+	glVertex2f(vertices[a].x, vertices[a].y),
+	glVertex2f(vertices[b].x, vertices[b].y);
+}
+void drawEdge(const Edge &e) { drawEdge(e.first, e.second); }
 
 void Render(void) {
 	glClear(GL_COLOR_BUFFER_BIT);
@@ -123,10 +160,9 @@ void Render(void) {
 	glColor3f(0.1, 0.5, 0.3);
 	glBegin(GL_LINES);
 	for(uint a = 0; a < nV; a++) {
-		for(uint &b : neighboors[a]) {
+		for(uint b : neighboors[a]) {
 			if(b < a) break;
-			glVertex2f(vertices[a].x, vertices[a].y),
-			glVertex2f(vertices[b].x, vertices[b].y);
+			drawEdge(a, b);
 		}
 	}
 	glEnd();
@@ -135,21 +171,17 @@ void Render(void) {
 	glLineWidth((GLfloat) 5.0);
 	glColor3f(0.9, 0.0, 0.5);
 	glBegin(GL_LINES);
-	for(Edge &e : contours) {
-		glVertex2f(vertices[e.first].x, vertices[e.first].y),
-		glVertex2f(vertices[e.second].x, vertices[e.second].y);
-	}
+	for(const Edge &e : contours) drawEdge(e);
 	glEnd();
 
 	// Draw ring
-	glLineWidth((GLfloat) 3.0);
-	glColor3f(0.9, 0.9, 0.0);
-	glBegin(GL_LINES);
-	for(uint b : neighboors[ring_vert]) {
-		glVertex2f(vertices[ring_vert].x, vertices[ring_vert].y),
-		glVertex2f(vertices[b].x, vertices[b].y);
+	if(ring_vert < nV) {
+		glLineWidth((GLfloat) 3.0);
+		glColor3f(0.9, 0.9, 0.0);
+		glBegin(GL_LINES);
+		for(uint b : neighboors[ring_vert]) drawEdge(ring_vert, b);
+		glEnd();
 	}
-	glEnd();
 
 	// Draw crosses
 	glLineWidth((GLfloat) 2.0);
@@ -191,7 +223,8 @@ int main(int argc, char** argv) {
 		return 1;
 	}
 	computeNeigbhboorsAndContours();
-	rand_angles();
+	// rand_angles();
+	smooth_cross_field(200);
 
 	glutInitWindowSize(WINDOW_WIDTH, WINDOW_HEIGHT);
 	glutInit(&argc, argv);
