@@ -3,7 +3,7 @@
 #include <iostream>
 #include <vector>
 #include <cmath>
-#include <eigen3/Eigen/SparseQR>
+#include <eigen3/Eigen/IterativeLinearSolvers>
 
 using namespace std;
 
@@ -86,7 +86,7 @@ void smooth_cross_field(uint n_steps) {
 	IJV.reserve(m+2*nE);
 	Eigen::VectorXd X, Y(m);
 	Eigen::SparseMatrix<double> A(m, 2*nV), At(2*nV, m);
-	double hard = 100.;
+	double hard = 200.;
 	uint i = 0;
 	cross_size = 0;
 	for(const Edge &e : contours) {
@@ -107,11 +107,9 @@ void smooth_cross_field(uint n_steps) {
 			IJV.emplace_back(i, 2*a+1, 1.); IJV.emplace_back(i, 2*b+1, -1.); Y(i++) = 0.;
 		}
 	}
-	cerr << i << " " << m << endl;
 
-	Eigen::SparseQR<Eigen::SparseMatrix<double>, Eigen::COLAMDOrdering<int>> QR;
+	Eigen::LeastSquaresConjugateGradient<Eigen::SparseMatrix<double>> solver;
 	for(uint step = 0; step < n_steps; ++step) {
-		cerr << step << endl;
 		if(step > 0) {
 			if(step == 1) {
 				IJV.resize(IJV.size()+2*nV);
@@ -120,7 +118,7 @@ void smooth_cross_field(uint n_steps) {
 			}
 			double soft = 1. + (hard-1.)*min(1., 2.*step/float(n_steps));
 			for(uint a = 0; a < nV; ++a) {
-				double fact = soft / sqrt(X(2*a)+X(2*a) + X(2*a+1)*X(2*a+1));
+				double fact = soft / sqrt(X(2*a)*X(2*a) + X(2*a+1)*X(2*a+1));
 				uint i = Y.size()-1-a;
 				IJV[IJV.size()-1-2*a] = Eigen::Triplet<double>(i, 2*a, fact*X(2*a));
 				IJV[IJV.size()-1-(2*a+1)] = Eigen::Triplet<double>(i, 2*a+1, fact*X(2*a+1));
@@ -128,15 +126,11 @@ void smooth_cross_field(uint n_steps) {
 			}
 		}
 		A.setFromTriplets(IJV.begin(), IJV.end());
-		cerr << "A set" << endl;
-		A.makeCompressed();		
-		cerr << "A compressed" << endl;
-		if(step == 1) QR.analyzePattern(A);
-		if(step == 0) QR.compute(A);
-		else QR.factorize(A);
-		cerr << "A comp" << endl;
-		X = QR.solve(Y);
-		cerr << step << endl;
+		if(step == 0) X = solver.compute(A).solve(Y);
+		else{
+			if(step == 1) solver.analyzePattern(A);
+			X = solver.factorize(A).solveWithGuess(Y, X);
+		}
 	}
 
 	angles.resize(nV);
