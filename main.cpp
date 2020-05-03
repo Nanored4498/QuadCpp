@@ -2,32 +2,25 @@
 #include <fstream>
 #include <iostream>
 #include <vector>
-#include <random>
+#include <cmath>
+#include <eigen3/Eigen/SparseQR>
 
 using namespace std;
 
 const static int WINDOW_WIDTH = 700;
 const static int WINDOW_HEIGHT = 500;
 
-default_random_engine rand_generator;
-
-struct Vertex {
-	float x, y;
-	Vertex(float x, float y): x(x), y(y) {}
-	Vertex operator-(const Vertex &other) { return Vertex(x-other.x, y-other.y); }
-	float norm() { return sqrt(x*x + y*y); }
-};
+typedef Eigen::Vector2f Vec2;
 typedef pair<uint, uint> Edge;
 typedef vector<uint> Face;
 
-vector<Vertex> vertices;
+vector<Vec2> vertices;
 vector<Face> faces;
 vector<Edge> contours;
 vector<vector<uint>> neighboors;
 vector<float> angles;
-uint ring_vert = 987654321;
 float cross_size;
-size_t nV;
+size_t nV, nE;
 float x_0=1e10, x_1=-1e10;
 float y_0=1e10, y_1=-1e10;
 
@@ -79,6 +72,7 @@ void computeNeigbhboorsAndContours() {
 		}
 	}
 	for(int a = nV-2; a >= 0; a--) {
+		nE += neighboors[a].size();
 		for(uint b : neighboors[a])
 			neighboors[b].push_back(a);
 		for(uint i = lim[a]; i < neighboors[a].size(); i++)
@@ -86,58 +80,72 @@ void computeNeigbhboorsAndContours() {
 	}
 }
 
-void rand_angles() {
-	uniform_int_distribution<uint> random_vertex(0, vertices.size()-1);
-	ring_vert = random_vertex(rand_generator);
-	angles = vector<float>(nV);
-	uniform_real_distribution<float> random_angle(0, 0.5*M_PI);
-	for(uint i = 0; i < nV; i++) angles[i] = random_angle(rand_generator);
-	cross_size = 0;
-	for(Edge &e : contours) angles[e.first] = 0;
-	for(Edge &e : contours) {
-		uint a = e.first, b = e.second;
-		Vertex v = vertices[b] - vertices[a];
-		float add = 0.5*atan2(v.y, v.x);
-		angles[a] += add, angles[b] += add;
-		cross_size += v.norm();
-	}
-	cross_size *= 0.33/contours.size();
-}
-
 void smooth_cross_field(uint n_steps) {
-	// Initialize
-	angles = vector<float>(nV);
-	vector<bool> is_edge(nV, false);
-	for(uint i = 0; i < nV; i++) angles[i] = 0;
-	for(Edge &e : contours) {
+	vector<Eigen::Triplet<double>> IJV;
+	size_t m = contours.size()*4 + 2*nE;
+	IJV.reserve(m+2*nE);
+	Eigen::VectorXd X, Y(m);
+	Eigen::SparseMatrix<double> A(m, 2*nV), At(2*nV, m);
+	double hard = 100.;
+	uint i = 0;
+	cross_size = 0;
+	for(const Edge &e : contours) {
 		uint a = e.first, b = e.second;
-		is_edge[a] = is_edge[b] = true;
-		Vertex v = vertices[b] - vertices[a];
-		float add = 0.5*atan2(v.y, v.x);
-		angles[a] += add, angles[b] += add;
+		Vec2 v = vertices[b] - vertices[a];
 		cross_size += v.norm();
+		double theta = 4*atan2(v[1], v[0]);
+		double c = hard*cos(theta), s = hard*sin(theta);
+		IJV.emplace_back(i, 2*a, hard); Y(i++) = c;
+		IJV.emplace_back(i, 2*a+1, hard); Y(i++) = s;
+		IJV.emplace_back(i, 2*b, hard); Y(i++) = c;
+		IJV.emplace_back(i, 2*b+1, hard); Y(i++) = s;
 	}
-	cross_size *= 0.33/contours.size();
+	cross_size *= .33/contours.size();
+	for(uint a = 0; a < nV; ++a){
+		for(uint b : neighboors[a]) if(a < b) {
+			IJV.emplace_back(i, 2*a, 1.); IJV.emplace_back(i, 2*b, -1.); Y(i++) = 0.;
+			IJV.emplace_back(i, 2*a+1, 1.); IJV.emplace_back(i, 2*b+1, -1.); Y(i++) = 0.;
+		}
+	}
+	cerr << i << " " << m << endl;
 
-	// Upddate
-	vector<float> tmp(nV);
-	for(uint step = 0; step < n_steps; step++) {
-		for(uint a = 0; a < nV; a++) {
-			if(is_edge[a]) tmp[a] = is_edge[a];
-			else {
-				float co = 0, si = 0;
-				for(uint b : neighboors[a])
-					co += cos(4*angles[b]), si += sin(4*angles[b]);
-				tmp[a] = atan2(si, co) / 4;
+	Eigen::SparseQR<Eigen::SparseMatrix<double>, Eigen::COLAMDOrdering<int>> QR;
+	for(uint step = 0; step < n_steps; ++step) {
+		cerr << step << endl;
+		if(step > 0) {
+			if(step == 1) {
+				IJV.resize(IJV.size()+2*nV);
+				Y.conservativeResize(m+nV);
+				A.resize(m+nV, 2*nV);
+			}
+			double soft = 1. + (hard-1.)*min(1., 2.*step/float(n_steps));
+			for(uint a = 0; a < nV; ++a) {
+				double fact = soft / sqrt(X(2*a)+X(2*a) + X(2*a+1)*X(2*a+1));
+				uint i = Y.size()-1-a;
+				IJV[IJV.size()-1-2*a] = Eigen::Triplet<double>(i, 2*a, fact*X(2*a));
+				IJV[IJV.size()-1-(2*a+1)] = Eigen::Triplet<double>(i, 2*a+1, fact*X(2*a+1));
+				Y(i) = soft;
 			}
 		}
-		swap(angles, tmp);
+		A.setFromTriplets(IJV.begin(), IJV.end());
+		cerr << "A set" << endl;
+		A.makeCompressed();		
+		cerr << "A compressed" << endl;
+		if(step == 1) QR.analyzePattern(A);
+		if(step == 0) QR.compute(A);
+		else QR.factorize(A);
+		cerr << "A comp" << endl;
+		X = QR.solve(Y);
+		cerr << step << endl;
 	}
+
+	angles.resize(nV);
+	for(uint a = 0; a < nV; ++a) angles[a] = atan2(X(2*a+1), X(2*a)) / 4.;
 }
 
 void drawEdge(uint a, uint b) {
-	glVertex2f(vertices[a].x, vertices[a].y),
-	glVertex2f(vertices[b].x, vertices[b].y);
+	glVertex2f(vertices[a][0], vertices[a][1]),
+	glVertex2f(vertices[b][0], vertices[b][1]);
 }
 void drawEdge(const Edge &e) { drawEdge(e.first, e.second); }
 
@@ -155,7 +163,7 @@ void Render(void) {
 	glBegin(GL_TRIANGLES);
 	for(Face &f : faces)
 		for(uint i : f)
-			glVertex2f(vertices[i].x, vertices[i].y);
+			glVertex2f(vertices[i][0], vertices[i][1]);
 	glEnd();
 
 	// Draw Edges
@@ -177,22 +185,13 @@ void Render(void) {
 	for(const Edge &e : contours) drawEdge(e);
 	glEnd();
 
-	// Draw ring
-	if(ring_vert < nV) {
-		glLineWidth((GLfloat) 3.0);
-		glColor3f(0.9, 0.9, 0.0);
-		glBegin(GL_LINES);
-		for(uint b : neighboors[ring_vert]) drawEdge(ring_vert, b);
-		glEnd();
-	}
-
 	// Draw crosses
 	glLineWidth((GLfloat) 2.0);
 	glColor3f(0.7, 0.7, 0.1);
 	glBegin(GL_LINES);
 	for(uint a = 0; a < nV; a++) {
 		float co = cross_size * cos(angles[a]), si = cross_size * sin(angles[a]);
-		float x = vertices[a].x, y = vertices[a].y;
+		float x = vertices[a][0], y = vertices[a][1];
 		glVertex2f(x-co, y-si);
 		glVertex2f(x+co, y+si);
 		glVertex2f(x+si, y-co);
@@ -257,8 +256,7 @@ int main(int argc, char** argv) {
 		return 1;
 	}
 	computeNeigbhboorsAndContours();
-	// rand_angles();
-	smooth_cross_field(200);
+	smooth_cross_field(15);
 
 	glutInitWindowSize(WINDOW_WIDTH, WINDOW_HEIGHT);
 	glutInit(&argc, argv);
