@@ -145,7 +145,10 @@ void Render(void) {
 	glClear(GL_COLOR_BUFFER_BIT);
 	
 	glLoadIdentity();
-	gluOrtho2D(x_0, x_1, y_0, y_1);
+	float x = .5*(x_0+x_1), y = .5*(y_0+y_1);
+	float w_rat = float(glutGet(GLUT_WINDOW_WIDTH)) / float(WINDOW_WIDTH);
+	float h_rat = float(glutGet(GLUT_WINDOW_HEIGHT)) / float(WINDOW_HEIGHT);
+	gluOrtho2D(x - w_rat*(x-x_0), x + w_rat*(x_1-x), y - h_rat*(y-y_0), y + h_rat*(y_1-y));
 
 	// Draw Triangles
 	glColor3f(0.2, 0.2, 0.1);
@@ -190,9 +193,9 @@ void Render(void) {
 	for(uint a = 0; a < nV; a++) {
 		float co = cross_size * cos(angles[a]), si = cross_size * sin(angles[a]);
 		float x = vertices[a].x, y = vertices[a].y;
-		glVertex2f(x-co, y-si),
+		glVertex2f(x-co, y-si);
 		glVertex2f(x+co, y+si);
-		glVertex2f(x+si, y-co),
+		glVertex2f(x+si, y-co);
 		glVertex2f(x-si, y+co);
 	}
 	glEnd();
@@ -200,18 +203,49 @@ void Render(void) {
 	glutSwapBuffers();
 }
 
+float click_x, click_y;
+bool clicked=false;
 void Mouse(int but, int st, int x, int y) {
-	if(st == GLUT_DOWN || but < 3 || but > 4) return;
-	int w = glutGet(GLUT_WINDOW_WIDTH), h = glutGet(GLUT_WINDOW_HEIGHT);
+	float w = glutGet(GLUT_WINDOW_WIDTH), h = glutGet(GLUT_WINDOW_HEIGHT);
+	float xm = .5*(x_0+x_1), ym = .5*(y_0+y_1);
+	float w_rat = w / float(WINDOW_WIDTH);
+	float h_rat = h / float(WINDOW_HEIGHT);
+	x_0 = xm - w_rat*(xm-x_0); x_1 = xm + w_rat*(x_1-xm);
+	y_0 = ym - h_rat*(ym-y_0); y_1 = ym + h_rat*(y_1-ym);
 	float pw = x_1-x_0, ph = y_1-y_0;
 	float px = (x * pw) / w + x_0;
 	float py = y_1 - (y * ph) / h;
-	float fac = but == 3 ? 0.95 : 1.0/0.95;
-	x_0 = px - fac*(px - x_0), x_1 = px + fac*(x_1 - px);
-	y_0 = py - fac*(py - y_0), y_1 = py + fac*(y_1 - py);
-	glutPostRedisplay();
+	bool redisplay = false;
+	if(but == 3 || but == 4) {
+		float fac = but == 3 ? 0.95 : 1.0/0.95;
+		x_0 = px - fac*(px - x_0); x_1 = px + fac*(x_1 - px);
+		y_0 = py - fac*(py - y_0); y_1 = py + fac*(y_1 - py);
+		redisplay = true;
+	} else if(but == 0) {
+		if(st == GLUT_DOWN) { click_x = px; click_y = py; clicked = true; }
+		else clicked = false;
+	}
+	xm = .5*(x_0+x_1); ym = .5*(y_0+y_1);
+	x_0 = xm - (xm-x_0)/w_rat; x_1 = xm + (x_1-xm)/w_rat;
+	y_0 = ym - (ym-y_0)/h_rat; y_1 = ym + (y_1-ym)/h_rat;
+	if(redisplay) glutPostRedisplay();
 }
 
+void Move(int x, int y) {
+	if(!clicked) return;
+	float w = glutGet(GLUT_WINDOW_WIDTH), h = glutGet(GLUT_WINDOW_HEIGHT);
+	float xm = .5*(x_0+x_1), ym = .5*(y_0+y_1);
+	float w_rat = w / float(WINDOW_WIDTH);
+	float h_rat = h / float(WINDOW_HEIGHT);
+	x_0 = xm - w_rat*(xm-x_0); x_1 = xm + w_rat*(x_1-xm);
+	y_0 = ym - h_rat*(ym-y_0); y_1 = ym + h_rat*(y_1-ym);
+	float pw = x_1-x_0, ph = y_1-y_0;
+	float dx = click_x - ((x * pw) / w + x_0);
+	float dy = click_y - (y_1 - (y * ph) / h);
+	x_0 = xm+dx - (xm-x_0)/w_rat; x_1 = xm+dx + (x_1-xm)/w_rat;
+	y_0 = ym+dy - (ym-y_0)/h_rat; y_1 = ym+dy + (y_1-ym)/h_rat;
+	glutPostRedisplay();
+}
 
 int main(int argc, char** argv) {
 	if(argc != 2) {
@@ -234,6 +268,7 @@ int main(int argc, char** argv) {
 
 	glutDisplayFunc(Render);
 	glutMouseFunc(Mouse);
+	glutMotionFunc(Move);
 
 	glutMainLoop();
 	return 0;
